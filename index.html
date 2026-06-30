@@ -140,7 +140,42 @@
                 item.spec.toLowerCase().includes(searchTerm.toLowerCase())
             );
 
-            // --- EXPORT FUNCTIONS ---
+            // --- EXPORT / IMPORT (BACKUP & RESTORE) FUNCTIONS ---
+            const handleBackupJSON = () => {
+                const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(items));
+                const downloadAnchorNode = document.createElement('a');
+                downloadAnchorNode.setAttribute("href", dataStr);
+                downloadAnchorNode.setAttribute("download", "Serrum_Backup_Data.json");
+                document.body.appendChild(downloadAnchorNode); // Required for Firefox
+                downloadAnchorNode.click();
+                downloadAnchorNode.remove();
+            };
+
+            const handleRestoreJSON = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const parsedData = JSON.parse(event.target.result);
+                        if (Array.isArray(parsedData)) {
+                            if(window.confirm('PERINGATAN: Memuat backup ini akan menimpa/mengganti data saat ini. Lanjutkan?')) {
+                                setItems(parsedData);
+                                alert("Data berhasil dipulihkan!");
+                            }
+                        } else {
+                            alert("Format file tidak valid.");
+                        }
+                    } catch (error) {
+                        alert("Gagal membaca file backup.");
+                    }
+                    // Reset file input
+                    e.target.value = null;
+                };
+                reader.readAsText(file);
+            };
+
+            // --- EXPORT FUNCTIONS (EXCEL & JPG) ---
             const handleExportExcel = () => {
                 // Prepare data without base64 image strings for lighter excel
                 const excelData = filteredItems.map((item, index) => ({
@@ -309,13 +344,25 @@
                     {/* MAIN CONTENT */}
                     <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
                         
-                        {/* Action Bar (Export/Print) */}
-                        <div className="flex justify-between items-end mb-6 no-print">
+                        {/* Action Bar (Export/Print/Backup) */}
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end mb-6 gap-4 no-print">
                             <div>
                                 <h2 className="text-2xl font-bold text-gray-800">Daftar Harga Material</h2>
-                                <p className="text-gray-500 text-sm mt-1">kepemilikan aset dan harga material serrum arthandling.</p>
+                                <p className="text-gray-500 text-sm mt-1">Kelola stok, gambar, dan harga material kebutuhan arthandling.</p>
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap gap-2 justify-end">
+                                {/* Button Backup & Restore */}
+                                <button onClick={handleBackupJSON} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-md text-sm font-medium flex items-center gap-2 shadow-sm transition-colors" title="Simpan sebagai file JSON">
+                                    <i data-lucide="save" className="h-4 w-4"></i> Simpan Backup
+                                </button>
+                                <label className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded-md text-sm font-medium flex items-center gap-2 shadow-sm cursor-pointer transition-colors" title="Muat data dari file JSON">
+                                    <i data-lucide="upload" className="h-4 w-4"></i> Muat Backup
+                                    <input type="file" accept=".json" onChange={handleRestoreJSON} className="hidden" />
+                                </label>
+                                
+                                <div className="hidden sm:block w-px bg-gray-300 mx-1"></div>
+                                
+                                {/* Existing Buttons */}
                                 <button onClick={handleExportExcel} className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-colors shadow-sm">
                                     <i data-lucide="download" className="h-4 w-4"></i> Excel
                                 </button>
@@ -368,7 +415,7 @@
                                     <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQHjVP89EmhemqPCMSNOFCv6wpq9jzs6DWo4g&s" alt="Logo" className="h-16 logo-blend" />
                                     <div>
                                         <h2 className="text-2xl font-bold">SERRUM ARTHANDLING METERIAL</h2>
-                                        <p className="text-gray-500">Daftar Aset & Stok Material</p>
+                                        <p className="text-gray-500">Daftar Harga & Stok Material</p>
                                     </div>
                                 </div>
                                 <div className="text-right text-sm text-gray-500">
