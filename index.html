@@ -89,8 +89,19 @@
 
         // --- MAIN APP COMPONENT ---
         const App = () => {
-            // State Management
-            const [items, setItems] = useState([]);
+            // State Management - Lazy Initialization untuk mencegah race condition pada localStorage
+            const [items, setItems] = useState(() => {
+                try {
+                    const savedData = localStorage.getItem('serrum_materials');
+                    if (savedData) {
+                        return JSON.parse(savedData);
+                    }
+                } catch (error) {
+                    console.error("Gagal memuat data dari storage:", error);
+                }
+                return initialData;
+            });
+            
             const [searchTerm, setSearchTerm] = useState("");
             const [isModalOpen, setIsModalOpen] = useState(false);
             const [editingItem, setEditingItem] = useState(null);
@@ -101,17 +112,10 @@
                 name: '', spec: '', qty: 1, unit: 'Pcs', price: 0, image: ''
             });
 
-            // Load data from localStorage on mount
+            // Initialize/Refresh Icons setiap kali ada perubahan render di layar
             useEffect(() => {
-                const savedData = localStorage.getItem('serrum_materials');
-                if (savedData) {
-                    setItems(JSON.parse(savedData));
-                } else {
-                    setItems(initialData);
-                }
-                // Initialize Lucide icons
                 lucide.createIcons();
-            }, []);
+            });
 
             // Save to localStorage whenever items change
             useEffect(() => {
@@ -123,7 +127,6 @@
                         alert("Penyimpanan browser penuh. Gambar terbaru mungkin tidak akan tersimpan secara permanen. Coba hapus beberapa data lama.");
                     }
                 }
-                lucide.createIcons(); // Re-init icons when list changes
             }, [items]);
 
             // Formatter for IDR Currency
