@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ASET SERRUM ARTHANDLING</title>
+    <title>SERRUM ARTHANDLING METERIAL</title>
     
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -23,6 +23,20 @@
     
     <!-- html2canvas (JPG Export) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+    <!-- Firebase SDK (Modular) untuk Cloud Storage antar perangkat -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Expose modul Firebase ke window agar bisa diakses oleh React (Babel)
+        window.FirebaseContext = {
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc
+        };
+        window.dispatchEvent(new Event('FirebaseLoaded'));
+    </script>
 
     <style>
         /* Print styles */
@@ -66,41 +80,17 @@
                 unit: "Lembar",
                 price: 250000,
                 image: "https://via.placeholder.com/150/e2e8f0/475569?text=MDF+15mm"
-            },
-            {
-                id: 2,
-                name: "Paku Triplek",
-                spec: "Ukuran 1 inch",
-                qty: 5,
-                unit: "Kotak",
-                price: 15000,
-                image: "https://via.placeholder.com/150/e2e8f0/475569?text=Paku"
-            },
-            {
-                id: 3,
-                name: "Cat Tembok Putih",
-                spec: "Vinilex 5kg",
-                qty: 2,
-                unit: "Galon",
-                price: 135000,
-                image: "https://via.placeholder.com/150/e2e8f0/475569?text=Cat+Putih"
             }
         ];
 
         // --- MAIN APP COMPONENT ---
         const App = () => {
-            // State Management - Lazy Initialization untuk mencegah race condition pada localStorage
-            const [items, setItems] = useState(() => {
-                try {
-                    const savedData = localStorage.getItem('serrum_materials');
-                    if (savedData) {
-                        return JSON.parse(savedData);
-                    }
-                } catch (error) {
-                    console.error("Gagal memuat data dari storage:", error);
-                }
-                return initialData;
-            });
+            // State Management
+            const [items, setItems] = useState([]);
+            const [isLoading, setIsLoading] = useState(true);
+            const [isCloudMode, setIsCloudMode] = useState(false);
+            const [user, setUser] = useState(null);
+            const [db, setDb] = useState(null);
             
             const [searchTerm, setSearchTerm] = useState("");
             const [isModalOpen, setIsModalOpen] = useState(false);
@@ -112,22 +102,106 @@
                 name: '', spec: '', qty: 1, unit: 'Pcs', price: 0, image: ''
             });
 
-            // Initialize/Refresh Icons setiap kali ada perubahan render di layar
+            // Re-render Icons
             useEffect(() => {
                 lucide.createIcons();
             });
 
-            // Save to localStorage whenever items change
+            // 1. INIT APLIKASI (Koneksi ke Cloud / Mode Offline)
             useEffect(() => {
-                try {
-                    localStorage.setItem('serrum_materials', JSON.stringify(items));
-                } catch (error) {
-                    console.error("Storage error:", error);
-                    if (error.name === 'QuotaExceededError') {
-                        alert("Penyimpanan browser penuh. Gambar terbaru mungkin tidak akan tersimpan secara permanen. Coba hapus beberapa data lama.");
+                const initializeApp = async () => {
+                    // Cek apakah platform mendukung konfigurasi Cloud
+                    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                        setIsCloudMode(true);
+                        
+                        // Tunggu skrip Firebase termuat secara sempurna
+                        if (!window.FirebaseContext) {
+                            await new Promise(resolve => window.addEventListener('FirebaseLoaded', resolve, {once: true}));
+                        }
+                        
+                        const { 
+                            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, 
+                            onAuthStateChanged, getFirestore 
+                        } = window.FirebaseContext;
+
+                        try {
+                            const firebaseConfig = JSON.parse(__firebase_config);
+                            const app = initializeApp(firebaseConfig);
+                            const auth = getAuth(app);
+                            const firestoreDb = getFirestore(app);
+                            setDb(firestoreDb);
+
+                            // Auth sebelum melakukan proses database
+                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                await signInWithCustomToken(auth, __initial_auth_token);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+
+                            onAuthStateChanged(auth, (u) => {
+                                setUser(u);
+                            });
+
+                        } catch (err) {
+                            console.error("Gagal inisialisasi cloud:", err);
+                            setIsCloudMode(false);
+                            fallbackToLocal();
+                        }
+                    } else {
+                        // Jalankan mode LocalStorage (sebagai fallback cadangan)
+                        setIsCloudMode(false);
+                        fallbackToLocal();
+                    }
+                };
+                
+                const fallbackToLocal = () => {
+                    const savedData = localStorage.getItem('serrum_materials');
+                    if (savedData) setItems(JSON.parse(savedData));
+                    else setItems(initialData);
+                    setIsLoading(false);
+                };
+
+                initializeApp();
+            }, []);
+
+            // 2. FETCH DATA DARI CLOUD (Sinkronisasi Antar Perangkat)
+            useEffect(() => {
+                if (!isCloudMode || !user || !db) return;
+                
+                const { collection, onSnapshot } = window.FirebaseContext;
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                
+                // Gunakan path publik agar semua perangkat yang sama dapat berbagi data ini
+                const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'materials');
+                
+                const unsubscribe = onSnapshot(colRef, (snapshot) => {
+                    const data = [];
+                    snapshot.forEach(doc => {
+                        data.push({ ...doc.data(), id: doc.id });
+                    });
+                    
+                    // Urutkan berdasarkan nama agar teratur
+                    data.sort((a, b) => a.name.localeCompare(b.name));
+                    setItems(data);
+                    setIsLoading(false);
+                }, (error) => {
+                    console.error("Kesalahan membaca data Cloud:", error);
+                    setIsLoading(false);
+                });
+
+                return () => unsubscribe();
+            }, [isCloudMode, user, db]);
+
+            // 3. BACKUP KE LOCALSTORAGE JIKA OFFLINE (Bukan Cloud)
+            useEffect(() => {
+                if (!isCloudMode && !isLoading) {
+                    try {
+                        localStorage.setItem('serrum_materials', JSON.stringify(items));
+                    } catch (error) {
+                        console.warn("Storage penuh.");
                     }
                 }
-            }, [items]);
+            }, [items, isCloudMode, isLoading]);
 
             // Formatter for IDR Currency
             const formatRupiah = (number) => {
@@ -149,22 +223,38 @@
                 const downloadAnchorNode = document.createElement('a');
                 downloadAnchorNode.setAttribute("href", dataStr);
                 downloadAnchorNode.setAttribute("download", "Serrum_Backup_Data.json");
-                document.body.appendChild(downloadAnchorNode); // Required for Firefox
+                document.body.appendChild(downloadAnchorNode); 
                 downloadAnchorNode.click();
                 downloadAnchorNode.remove();
             };
 
-            const handleRestoreJSON = (e) => {
+            const handleRestoreJSON = async (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
                 const reader = new FileReader();
-                reader.onload = (event) => {
+                reader.onload = async (event) => {
                     try {
                         const parsedData = JSON.parse(event.target.result);
                         if (Array.isArray(parsedData)) {
-                            if(window.confirm('PERINGATAN: Memuat backup ini akan menimpa/mengganti data saat ini. Lanjutkan?')) {
-                                setItems(parsedData);
-                                alert("Data berhasil dipulihkan!");
+                            if(window.confirm('PERINGATAN: Memuat backup akan menambahkan/menimpa data saat ini. Lanjutkan?')) {
+                                
+                                // Jika mode cloud aktif, kita upload ke cloud satu per satu
+                                if (isCloudMode && user && db) {
+                                    setIsLoading(true);
+                                    const { doc, setDoc, collection } = window.FirebaseContext;
+                                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                                    const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'materials');
+                                    
+                                    for (const item of parsedData) {
+                                        const docRef = doc(colRef, item.id.toString());
+                                        const { id, ...dataToSave } = item;
+                                        await setDoc(docRef, dataToSave);
+                                    }
+                                    alert("Data berhasil dipulihkan ke Cloud!");
+                                } else {
+                                    setItems(parsedData);
+                                    alert("Data berhasil dipulihkan!");
+                                }
                             }
                         } else {
                             alert("Format file tidak valid.");
@@ -172,15 +262,13 @@
                     } catch (error) {
                         alert("Gagal membaca file backup.");
                     }
-                    // Reset file input
-                    e.target.value = null;
+                    e.target.value = null; // Reset input
                 };
                 reader.readAsText(file);
             };
 
             // --- EXPORT FUNCTIONS (EXCEL & JPG) ---
             const handleExportExcel = () => {
-                // Prepare data without base64 image strings for lighter excel
                 const excelData = filteredItems.map((item, index) => ({
                     'No': index + 1,
                     'Nama Material': item.name,
@@ -190,7 +278,6 @@
                     'Harga Satuan': item.price,
                     'Total Harga': item.price * item.qty
                 }));
-
                 const worksheet = XLSX.utils.json_to_sheet(excelData);
                 const workbook = XLSX.utils.book_new();
                 XLSX.utils.book_append_sheet(workbook, worksheet, "Daftar Harga");
@@ -199,22 +286,18 @@
 
             const handleExportJPG = () => {
                 const element = printableRef.current;
-                
-                // Temporarily show things that might be hidden normally but needed for export
                 const headerElements = element.querySelectorAll('.print-header-only');
                 headerElements.forEach(el => el.style.display = 'flex');
 
                 html2canvas(element, {
-                    scale: 2, // Higher quality
-                    useCORS: true, // Allow cross-origin images (like the logo)
+                    scale: 2,
+                    useCORS: true,
                     backgroundColor: '#ffffff'
                 }).then(canvas => {
                     const link = document.createElement('a');
                     link.download = 'Serrum_Material_List.jpg';
                     link.href = canvas.toDataURL('image/jpeg', 0.9);
                     link.click();
-                    
-                    // Revert temporary display changes
                     headerElements.forEach(el => el.style.display = 'none');
                 });
             };
@@ -256,12 +339,11 @@
                         const img = new Image();
                         img.onload = () => {
                             const canvas = document.createElement('canvas');
-                            const MAX_WIDTH = 600; // Maksimal lebar gambar
-                            const MAX_HEIGHT = 600; // Maksimal tinggi gambar
+                            const MAX_WIDTH = 600; 
+                            const MAX_HEIGHT = 600; 
                             let width = img.width;
                             let height = img.height;
 
-                            // Logika untuk resize proporsional
                             if (width > height) {
                                 if (width > MAX_WIDTH) {
                                     height *= MAX_WIDTH / width;
@@ -279,7 +361,6 @@
                             const ctx = canvas.getContext('2d');
                             ctx.drawImage(img, 0, 0, width, height);
                             
-                            // Kompres gambar menjadi format JPEG dengan kualitas 70%
                             const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
                             setFormData(prev => ({ ...prev, image: compressedBase64 }));
                         };
@@ -289,25 +370,65 @@
                 }
             };
 
-            const handleSubmit = (e) => {
+            // SUBMIT & HAPUS KE CLOUD STORAGE
+            const handleSubmit = async (e) => {
                 e.preventDefault();
-                if (editingItem) {
-                    // Update
-                    setItems(items.map(item => item.id === editingItem.id ? { ...formData, id: item.id } : item));
+                
+                const submitData = {
+                    name: formData.name,
+                    spec: formData.spec,
+                    qty: formData.qty,
+                    unit: formData.unit,
+                    price: formData.price,
+                    image: formData.image
+                };
+
+                if (isCloudMode) {
+                    if (!user || !db) {
+                        alert("Gagal menyimpan: koneksi ke cloud belum siap.");
+                        return;
+                    }
+                    try {
+                        const { doc, setDoc, collection } = window.FirebaseContext;
+                        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                        const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'materials');
+                        
+                        const idToSave = editingItem ? editingItem.id.toString() : Date.now().toString();
+                        const docRef = doc(colRef, idToSave);
+                        
+                        await setDoc(docRef, submitData);
+                    } catch (err) {
+                        console.error("Gagal simpan ke cloud:", err);
+                        alert("Terjadi kesalahan saat menyimpan ke cloud.");
+                    }
                 } else {
-                    // Create
-                    const newItem = { ...formData, id: Date.now() };
-                    setItems([...items, newItem]);
+                    if (editingItem) {
+                        setItems(items.map(item => item.id === editingItem.id ? { ...submitData, id: item.id } : item));
+                    } else {
+                        setItems([...items, { ...submitData, id: Date.now().toString() }]);
+                    }
                 }
                 closeModal();
             };
 
-            const handleDelete = (id) => {
+            const handleDelete = async (id) => {
                 if(window.confirm('Yakin ingin menghapus material ini?')) {
-                    setItems(items.filter(item => item.id !== id));
+                    if (isCloudMode) {
+                        if (!user || !db) return;
+                        try {
+                            const { doc, deleteDoc, collection } = window.FirebaseContext;
+                            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                            const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'materials');
+                            
+                            await deleteDoc(doc(colRef, id.toString()));
+                        } catch (err) {
+                            console.error("Gagal hapus di cloud:", err);
+                        }
+                    } else {
+                        setItems(items.filter(item => item.id !== id));
+                    }
                 }
             };
-
 
             return (
                 <div className="min-h-screen flex flex-col">
@@ -322,12 +443,18 @@
                                 />
                                 <div>
                                     <h1 className="font-bold text-xl text-gray-900 leading-tight">SERRUM ARTHANDLING</h1>
-                                    <p className="text-sm font-semibold tracking-widest text-indigo-600">METERIAL SYSTEM</p>
+                                    <div className="flex items-center gap-2">
+                                        <p className="text-sm font-semibold tracking-widest text-indigo-600">METERIAL SYSTEM</p>
+                                        {/* Indikator Mode Awan */}
+                                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${isCloudMode ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                                            {isCloudMode ? 'Live Sync' : 'Mode Offline'}
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
                             
                             <div className="flex items-center gap-3">
-                                <div className="relative">
+                                <div className="relative hidden md:block">
                                     <i data-lucide="search" className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4"></i>
                                     <input 
                                         type="text" 
@@ -338,7 +465,7 @@
                                     />
                                 </div>
                                 <button onClick={() => openModal()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors">
-                                    <i data-lucide="plus" className="h-4 w-4"></i> Tambah Data
+                                    <i data-lucide="plus" className="h-4 w-4"></i> <span className="hidden sm:inline">Tambah Data</span>
                                 </button>
                             </div>
                         </div>
@@ -351,7 +478,7 @@
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end mb-6 gap-4 no-print">
                             <div>
                                 <h2 className="text-2xl font-bold text-gray-800">Daftar Harga Material</h2>
-                                <p className="text-gray-500 text-sm mt-1">kepemilikan dan harga aset serrum arthandling.</p>
+                                <p className="text-gray-500 text-sm mt-1">Kelola stok, gambar, dan harga material kebutuhan arthandling.</p>
                             </div>
                             <div className="flex flex-wrap gap-2 justify-end">
                                 {/* Button Backup & Restore */}
@@ -409,6 +536,18 @@
                             </div>
                         </div>
 
+                        {/* Mobile Search Bar (Visible on small screens) */}
+                        <div className="md:hidden mb-4 relative no-print">
+                            <i data-lucide="search" className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4"></i>
+                            <input 
+                                type="text" 
+                                placeholder="Cari material..." 
+                                className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                            />
+                        </div>
+
                         {/* TABLE AREA (Printable) */}
                         <div id="printable-area" className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden" ref={printableRef}>
                             
@@ -440,7 +579,14 @@
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-gray-100">
-                                        {filteredItems.length > 0 ? (
+                                        {isLoading ? (
+                                            <tr>
+                                                <td colSpan="7" className="px-6 py-12 text-center text-gray-500">
+                                                    <div className="animate-spin inline-block w-8 h-8 border-[3px] border-current border-t-transparent text-indigo-600 rounded-full mb-3" role="status"></div>
+                                                    <p className="text-sm font-medium">Memuat data dari cloud...</p>
+                                                </td>
+                                            </tr>
+                                        ) : filteredItems.length > 0 ? (
                                             filteredItems.map((item, index) => (
                                                 <tr key={item.id} className="hover:bg-gray-50 transition-colors">
                                                     <td className="px-6 py-4 text-center text-gray-500">{index + 1}</td>
